@@ -164,6 +164,8 @@ def publish(conf, st):
         return
     site = "https://%s.github.io/%s" % tuple(repo.split("/", 1))
     ptest = os.environ.get("PUBLISH_TEST") == "true"
+    if st.get("rate_limited_until", "") > datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"):
+        return  # Zernio موقف النشر مؤقتاً، ننتظر
     today = datetime.now().strftime("%Y-%m-%d")
     done = sum(1 for c in st["clips"].values() if c.get("posted_day") == today)
     room = min(4 if ptest else conf.get("publish_per_run", 1), conf.get("max_publish_per_day", 8) - done)
@@ -196,6 +198,11 @@ def publish(conf, st):
             c.update(status="posted", posted_ts=time.time(), posted_day=today, yt_url=url or post.get("platformPostUrl", ""),
                      zernio_id=post.get("_id") or post.get("id") or "", zernio_status=post.get("status", ""))
             log("انتشر ✓", c["streamer"], "-", title, "|", c["yt_url"], "| status:", c["zernio_status"])
+        elif code == 429:
+            until = ((r.get("details") or {}).get("rateLimitedUntil") or "")[:19] + "Z"
+            st["rate_limited_until"] = until if len(until) == 20 else (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            log("النشر موقوف من Zernio لحد", st["rate_limited_until"])
+            break
         else:
             c["pub_fail"] = c.get("pub_fail", 0) + 1
             log("فشل النشر ✗", code, json.dumps(r, ensure_ascii=False)[:400])
@@ -542,6 +549,14 @@ def deploy_and_publish(conf, st):
 
 
 def cycle(conf, st, test=False):
+    if not st.get("pubfail_reset_1"):
+        for c in st["clips"].values():
+            c.pop("pub_fail", None)
+        st["pubfail_reset_1"] = True
+    backlog = sum(1 for c in st["clips"].values() if c["status"] == "ready" and c.get("live"))
+    if not test and backlog >= conf.get("max_backlog", 12):
+        log(f"بالانتظار {backlog} مقطع جاهز، ما أكص زيادة لحد ما ينفتح النشر")
+        return 0
     games = conf["test_game_names"] if test else conf["game_names"]
     try:
         if conf["twitch_client_id"] and conf["twitch_client_secret"]:
