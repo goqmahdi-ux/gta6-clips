@@ -39,5 +39,32 @@
   "keep_hours": 72,
   "hashtags": "#GTA6 #GTAVI #shorts",
   "max_publish_per_day": 30,
-  "publish_per_run": 2
+  "publish_per_run": 2,
+  "test_streamers": [
+    "buddha",
+    "ramee",
+    "lord_kebun",
+    "penta",
+    "koil",
+    "omie",
+    "zerkaa",
+    "fanum",
+    "dundee",
+    "whippy",
+    "summit1g",
+    "sykkuno",
+    "xqc",
+    "kaicenat",
+    "ray__c",
+    "vader",
+    "ming",
+    "ssaab",
+    "curvyelephant",
+    "4head",
+    "shotz",
+    "kyle",
+    "lysium",
+    "mrk",
+    "tobiii"
+  ]
 }

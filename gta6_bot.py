@@ -55,6 +55,18 @@ def zernio(path, key, body=None):
             return e.code, {"raw": txt[:400]}
 
 
+def make_copy(c, live=True):
+    """عنوان ووصف بالعربي والإنكليزي."""
+    g, tag = ("GTA 6", "#GTA6 #GTAVI #جي_تي_اي_6 #قراند6") if live else ("GTA 5", "#GTA5 #GTAV #جي_تي_اي_5 #قراند5")
+    t, s_ = clean(c["title"])[:38].strip(), c["streamer"]
+    title = f"{t} | {s_} 🔥 لقطات {g} #{g.replace(' ', '')} #shorts"[:100]
+    desc = (f"{t}\n🎮 Clip from {s_}'s stream: https://twitch.tv/{s_}\n"
+            f"The best {g} stream moments, every day. Subscribe for more!\n\n"
+            f"🎮 لقطة من بث {s_}\nأقوى لحظات {g} من البثوث يومياً. اشترك بالقناة حتى توصلك أول بأول!\n\n"
+            f"Original clip: {c['url']}\n\n{tag} #shorts")
+    return title, desc
+
+
 def publish(conf, st):
     """ينشر على يوتيوب عبر Zernio المقاطع الجاهزة من التشغيلات السابقة (ملفها صار على الصفحة)."""
     key = "".join((os.environ.get("ZERNIO_API_KEY") or "").split())
@@ -65,7 +77,7 @@ def publish(conf, st):
     ptest = os.environ.get("PUBLISH_TEST") == "true"
     today = datetime.now().strftime("%Y-%m-%d")
     done = sum(1 for c in st["clips"].values() if c.get("posted_day") == today)
-    room = min(conf.get("publish_per_run", 1), conf.get("max_publish_per_day", 8) - done)
+    room = min(4 if ptest else conf.get("publish_per_run", 1), conf.get("max_publish_per_day", 8) - done)
     cand = [c for c in st["clips"].values() if c["status"] == "ready" and (c.get("live") or ptest)
             and c.get("pub_fail", 0) < 3 and os.path.exists(os.path.join(READY, c["id"] + ".mp4"))]
     cand = sorted(cand, key=lambda c: -c.get("views", 0))[:max(room, 0)]
@@ -79,9 +91,8 @@ def publish(conf, st):
         return
     aid = yt.get("_id") or yt.get("id") or yt.get("accountId")
     for c in cand:
-        title, desc = c["yt_title"], c["yt_desc"]
-        if not c.get("live"):
-            title, desc = title.replace(conf["hashtags"], "#GTA5 #shorts"), desc.replace(conf["hashtags"], "#GTA5 #shorts")
+        title, desc = make_copy(c, bool(c.get("live")))
+        c.update(yt_title=title, yt_desc=desc)
         body = {"content": desc, "mediaItems": [{"type": "video", "url": f"{site}/v/{c['id']}.mp4"}],
                 "platforms": [{"platform": "youtube", "accountId": aid,
                                "platformSpecificData": {"title": title[:100], "visibility": "public", "madeForKids": False}}],
@@ -182,7 +193,7 @@ def ytdlp():
 def fallback_clips(conf, games, st, test=False):
     """بدون مفاتيح: كلبات قائمة الستريمرز، ويفرز حسب فئة اللعبة من بيانات كل كلب."""
     out, rng = [], ("7d" if test else "24hr")
-    for s in conf["streamers"]:
+    for s in (conf.get("test_streamers") or conf["streamers"]) if test else conf["streamers"]:
         try:
             r = subprocess.run(ytdlp() + ["--flat-playlist", "-J", "--playlist-end", "20",
                                 f"https://www.twitch.tv/{s}/clips?filter=clips&range={rng}"],
@@ -198,7 +209,7 @@ def fallback_clips(conf, games, st, test=False):
             log("فشل جلب", s, str(ex)[:160])
     log(f"الوضع الاحتياطي: {len(out)} كلب من القوائم")
     checked = set(st.setdefault("checked", []))
-    cand = [c for c in sorted(out, key=lambda x: -x["views"]) if c["url"] and c["id"] not in checked and c["id"] not in st["clips"]][:30]
+    cand = [c for c in sorted(out, key=lambda x: -x["views"]) if c["url"] and c["id"] not in checked and c["id"] not in st["clips"]][:45 if test else 30]
     want, keep, seen = [g.lower() for g in games], [], {}
     for c in cand:
         try:
@@ -323,9 +334,9 @@ def process(c, conf, st):
     raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
     ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, c["title"], c["streamer"], conf["max_seconds"])
     t = clean(c["title"])[:60]
+    yt_t, yt_d = make_copy(c, not TEST_RUN)
     rec = dict(c, live=not TEST_RUN, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
-               yt_title=f"{t} | {c['streamer']} {conf['hashtags']}"[:100],
-               yt_desc=f"Clip from {c['streamer']}'s stream: https://twitch.tv/{c['streamer']}\nOriginal clip: {c['url']}\n\n{conf['hashtags']}")
+               yt_title=yt_t, yt_desc=yt_d)
     with LOCK:
         st["clips"][c["id"]] = rec
         save_state(st)
