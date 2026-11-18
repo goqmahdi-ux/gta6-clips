@@ -428,6 +428,32 @@ def prune(conf, st):
     save_state(st)
 
 
+def deploy_and_publish(conf, st):
+    """بعد القص: يرفع الصفحة فوراً، ينتظر الملف يصير متاح، وينشر بنفس الدورة."""
+    tok, repo = os.environ.get("GH_TOKEN"), os.environ.get("GITHUB_REPOSITORY", "")
+    new = [c for c in st["clips"].values() if c["status"] == "ready" and c.get("live")]
+    if not (SITE and tok and "/" in repo and new and os.environ.get("ZERNIO_API_KEY")):
+        return
+    sh = ("rm -rf .git && git init -q -b gh-pages && git config user.name gta6-bot && git config user.email bot@users.noreply.github.com"
+          " && git add -A && git commit -q -m update && git push -q --force https://x-access-token:%s@github.com/%s gh-pages; rm -rf .git" % (tok, repo))
+    if os.path.exists(os.path.join(BASE, "dashboard.html")):
+        shutil.copy(os.path.join(BASE, "dashboard.html"), os.path.join(SITE, "index.html"))
+    open(os.path.join(SITE, ".nojekyll"), "a").close()
+    subprocess.run(["bash", "-c", sh], cwd=SITE, capture_output=True, text=True, timeout=300)
+    url = "https://%s.github.io/%s/v/%s.mp4" % (*repo.split("/", 1), new[-1]["id"])
+    for _ in range(18):
+        time.sleep(10)
+        try:
+            if urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers=UA), timeout=15).status == 200:
+                break
+        except Exception:
+            pass
+    else:
+        log("الصفحة ما تحدثت بالوقت، النشر بالدورة الجاية")
+        return
+    publish(conf, st)
+
+
 def cycle(conf, st, test=False):
     games = conf["test_game_names"] if test else conf["game_names"]
     try:
@@ -578,7 +604,12 @@ if __name__ == "__main__":
             publish(conf, st)
         except Exception as ex:
             log("خطأ بالنشر:", type(ex).__name__, str(ex)[:200])
-        cycle(conf, st, test)
+        n = cycle(conf, st, test)
+        if n and not test:
+            try:
+                deploy_and_publish(conf, st)
+            except Exception as ex:
+                log("خطأ بالنشر السريع:", type(ex).__name__, str(ex)[:200])
         prune(conf, st)
     else:
         serve(st, conf["port"])
