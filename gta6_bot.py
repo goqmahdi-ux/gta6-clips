@@ -55,19 +55,105 @@ def zernio(path, key, body=None):
             return e.code, {"raw": txt[:400]}
 
 
-def make_copy(c, live=True):
-    """عنوان ووصف بالعربي والإنكليزي."""
-    g, tag = ("GTA 6", "#GTA6 #GTAVI #جي_تي_اي_6 #قراند6") if live else ("GTA 5", "#GTA5 #GTAV #جي_تي_اي_5 #قراند5")
-    t, s_ = clean(c["title"])[:38].strip(), c["streamer"]
-    host = "kick.com" if c.get("src") == "kick" else "twitch.tv"
+STYLES = {
+    "streamer": "{t} | {s} 🔥 لقطات {g} #{h} #shorts",
+    "unbelievable": "شي ما يتصدق بـ {g} 😱 You won't believe this | {s} #{h} #shorts",
+    "watch": "شوفوا شصار بـ {g} 👀 Watch what happened in {g} | {s} #{h} #shorts",
+    "clip_first": "{t} 😱 {g} | جي تي اي #{h} #shorts",
+    "reaction": "ردة فعل {s} على {g} 🔥 {s} reacts to {g} #{h} #shorts",
+    "best_today": "أقوى لقطة بـ {g} اليوم؟ 🔥 Best {g} moment today? | {s} #{h} #shorts",
+}
+
+
+def nice_title(c, g="GTA 6"):
+    t = clean(c["title"])[:38].strip()
     if len(re.sub(r"[^A-Za-z\u0600-\u06FF]", "", t)) < 4 or re.search(r"\b(sex|porn|nude|fuck|nigg\w*)\b", t, re.I):
         t = f"{g} moment"
-    title = f"{t} | {s_} 🔥 لقطات {g} #{g.replace(' ', '')} #shorts"[:100]
+    return t
+
+
+def style_stats(st):
+    """معدل المشاهدات بالساعة لكل أسلوب عنوان (للمقاطع الي عمرها ساعة ونص وأكثر)."""
+    agg = {k: [0.0, 0] for k in STYLES}
+    for c in st["clips"].values():
+        age = (time.time() - c.get("posted_ts", 0)) / 3600
+        if c.get("status") == "posted" and c.get("live") and c.get("style") in agg and "yt_views" in c and age >= 1.5:
+            agg[c["style"]][0] += c["yt_views"] / min(age, 24)
+            agg[c["style"]][1] += 1
+    return {k: (round(v[0] / v[1], 2) if v[1] else None, v[1]) for k, v in agg.items()}
+
+
+def pick_style(st):
+    """يجرب كل الأساليب أول، وبعدها يعتمد الأقوى (75%) ويبقى يجرب الباقي (25%)."""
+    import random
+    stats = style_stats(st)
+    used = {k: sum(1 for c in st["clips"].values() if c.get("style") == k and c.get("live")) for k in STYLES}
+    if min(used.values()) < 3:
+        return min(used, key=lambda k: (used[k], random.random()))
+    scored = {k: v[0] for k, v in stats.items() if v[0] is not None and v[1] >= 2}
+    if scored and random.random() < 0.75:
+        return max(scored, key=scored.get)
+    return random.choice(list(STYLES))
+
+
+def make_copy(c, live=True, style="streamer"):
+    """عنوان ووصف بالعربي والإنكليزي."""
+    g, tag = ("GTA 6", "#GTA6 #GTAVI #جي_تي_اي_6 #قراند6") if live else ("GTA 5", "#GTA5 #GTAV #جي_تي_اي_5 #قراند5")
+    t, s_ = nice_title(c, g), c["streamer"]
+    host = "kick.com" if c.get("src") == "kick" else "twitch.tv"
+    title = STYLES.get(style, STYLES["streamer"]).format(t=t, s=s_, g=g, h=g.replace(" ", ""))[:100]
     desc = (f"{t}\n🎮 Clip from {s_}'s stream: https://{host}/{s_}\n"
             f"The best {g} stream moments, every day. Subscribe for more!\n\n"
             f"🎮 لقطة من بث {s_}\nأقوى لحظات {g} من البثوث يومياً. اشترك بالقناة حتى توصلك أول بأول!\n\n"
             f"Original clip: {c.get('page') or c['url']}\n\n{tag} #shorts")
     return title, desc
+
+
+def _find(o, key):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == key and isinstance(v, (int, float)) and not isinstance(v, bool):
+                return v
+        for v in o.values():
+            r = _find(v, key)
+            if r is not None:
+                return r
+    elif isinstance(o, list):
+        for v in o:
+            r = _find(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def refresh_views(conf, st):
+    """يسحب مشاهدات المقاطع المنشورة من Zernio ويحدث إحصائيات الأساليب."""
+    key = "".join((os.environ.get("ZERNIO_API_KEY") or "").split())
+    posted = [c for c in st["clips"].values() if c.get("status") == "posted" and c.get("yt_url")]
+    if not key or not posted or time.time() - st.get("views_ts", 0) < 1500:
+        return
+    st["views_ts"] = time.time()
+    code, r = zernio("/analytics?limit=100&platform=youtube", key)
+    items = r.get("posts") or r.get("data") or r.get("analytics") or (r if isinstance(r, list) else [])
+    if not st.get("views_shape_logged"):
+        log("analytics شكل:", code, json.dumps(r, ensure_ascii=False)[:700])
+        st["views_shape_logged"] = True
+    hit = 0
+    for it in items if isinstance(items, list) else []:
+        blob = json.dumps(it)
+        for c in posted:
+            vid = c["yt_url"].split("v=")[-1].split("&")[0]
+            if vid and vid in blob:
+                v = _find(it, "views")
+                if v is not None:
+                    c["yt_views"] = int(v)
+                    hit += 1
+    stats = style_stats(st)
+    st["style_stats"] = stats
+    dead = [c["streamer"] for c in posted if c.get("live") and c.get("yt_views") == 0 and time.time() - c.get("posted_ts", 0) > 3 * 3600]
+    log(f"مشاهدات: حدثت {hit}/{len(posted)} |", " ".join(f"{k}:{v[0]}/h({v[1]})" for k, v in stats.items()),
+        ("| ⚠ صفر مشاهدات بعد 3 ساعات: " + ",".join(dead[:5])) if dead else "")
+    save_state(st)
 
 
 def publish(conf, st):
@@ -94,8 +180,9 @@ def publish(conf, st):
         return
     aid = yt.get("_id") or yt.get("id") or yt.get("accountId")
     for c in cand:
-        title, desc = make_copy(c, bool(c.get("live")))
-        c.update(yt_title=title, yt_desc=desc)
+        style = pick_style(st) if c.get("live") else "streamer"
+        title, desc = make_copy(c, bool(c.get("live")), style)
+        c.update(yt_title=title, yt_desc=desc, style=style)
         body = {"content": desc, "mediaItems": [{"type": "video", "url": f"{site}/v/{c['id']}.mp4"}],
                 "platforms": [{"platform": "youtube", "accountId": aid,
                                "platformSpecificData": {"title": title[:100], "visibility": "public", "madeForKids": False}}],
@@ -398,7 +485,7 @@ def download(url, dst):
 
 def process(c, conf, st):
     raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
-    vt = make_copy(c, not TEST_RUN)[0].split(" | ")[0]
+    vt = nice_title(c, "GTA 5" if TEST_RUN else "GTA 6")
     ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, vt, c["streamer"], conf["max_seconds"],
                                                                         "kick.com" if c.get("src") == "kick" else "twitch.tv")
     t = clean(c["title"])[:60]
@@ -604,6 +691,10 @@ if __name__ == "__main__":
             publish(conf, st)
         except Exception as ex:
             log("خطأ بالنشر:", type(ex).__name__, str(ex)[:200])
+        try:
+            refresh_views(conf, st)
+        except Exception as ex:
+            log("خطأ بالمشاهدات:", type(ex).__name__, str(ex)[:200])
         n = cycle(conf, st, test)
         if n and not test:
             try:

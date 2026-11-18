@@ -21,7 +21,7 @@ e.innerHTML=`<video controls playsinline preload=none poster="" src="v/${c.id}.m
 <div class=m></div><div class=r><a class="b g" download href="v/${c.id}.mp4">تنزيل</a>
 <button class=b>نسخ العنوان</button><button class=b>نسخ الوصف</button></div><div class=r>
 ${T=='ready'?'<button class="b g">تم النشر</button><button class="b x">تجاهل</button>':''}</div></div>`;
-e.querySelector('.t').textContent=c.yt_title;e.querySelector('.m').textContent=c.streamer+' · '+c.views+' views';if(c.yt_url){let a=document.createElement('a');a.href=c.yt_url;a.target='_blank';a.textContent='▶ YouTube';a.style.color='#ff5fa2';e.querySelector('.m').append(' · ',a)}
+e.querySelector('.t').textContent=c.yt_title;e.querySelector('.m').textContent=c.streamer+(c.yt_views!=null?' · يوتيوب: '+c.yt_views+' مشاهدة':' · '+c.views+' views')+(c.style?' · '+c.style:'');if(c.yt_url){let a=document.createElement('a');a.href=c.yt_url;a.target='_blank';a.textContent='▶ YouTube';a.style.color='#ff5fa2';e.querySelector('.m').append(' · ',a)}
 let B=e.querySelectorAll('button');B[0].onclick=()=>cp(c.yt_title,B[0]);B[1].onclick=()=>cp(c.yt_desc,B[1]);
 if(B[2]){B[2].onclick=()=>mk(c.id,'posted');B[3].onclick=()=>mk(c.id,'skipped')}w.appendChild(e)})}
 async function load(){try{let r=await fetch('state.json?'+Date.now());D=Object.values((await r.json()).clips||{}).sort((a,b)=>(b.ts||0)-(a.ts||0));
