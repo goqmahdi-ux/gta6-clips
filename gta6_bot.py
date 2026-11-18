@@ -7,7 +7,7 @@
   python3 gta6_bot.py once       دورة وحدة
   python3 gta6_bot.py selftest   فحص القص والدشبورد بدون نت
 """
-import json, os, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
+import json, os, re, shutil, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,6 +33,72 @@ DEFAULTS = {
     "cycle_minutes": 20, "port": 8099, "keep_hours": 72, "hashtags": "#GTA6 #GTAVI #shorts",
 }
 LOCK = threading.Lock()
+TEST_RUN = "--test" in sys.argv
+UA = {"User-Agent": "gta6-clips-bot/1.0", "Accept": "application/json"}
+
+
+def zernio(path, key, body=None):
+    h = dict(UA, Authorization="Bearer " + key)
+    data = None
+    if body is not None:
+        h["Content-Type"] = "application/json"
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request("https://zernio.com/api/v1" + path, headers=h, data=data)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return r.status, json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        txt = e.read().decode("utf-8", "replace")
+        try:
+            return e.code, json.loads(txt)
+        except Exception:
+            return e.code, {"raw": txt[:400]}
+
+
+def publish(conf, st):
+    """ينشر على يوتيوب عبر Zernio المقاطع الجاهزة من التشغيلات السابقة (ملفها صار على الصفحة)."""
+    key = os.environ.get("ZERNIO_API_KEY")
+    repo = os.environ.get("GITHUB_REPOSITORY", "")
+    if not key or "/" not in repo:
+        return
+    site = "https://%s.github.io/%s" % tuple(repo.split("/", 1))
+    ptest = os.environ.get("PUBLISH_TEST") == "true"
+    today = datetime.now().strftime("%Y-%m-%d")
+    done = sum(1 for c in st["clips"].values() if c.get("posted_day") == today)
+    room = min(conf.get("publish_per_run", 1), conf.get("max_publish_per_day", 8) - done)
+    cand = [c for c in st["clips"].values() if c["status"] == "ready" and (c.get("live") or ptest)
+            and c.get("pub_fail", 0) < 3 and os.path.exists(os.path.join(READY, c["id"] + ".mp4"))]
+    cand = sorted(cand, key=lambda c: -c.get("views", 0))[:max(room, 0)]
+    if not cand:
+        return
+    code, acc = zernio("/accounts", key)
+    lst = acc.get("accounts") or acc.get("data") or (acc if isinstance(acc, list) else [])
+    yt = next((a for a in lst if a.get("platform") == "youtube"), None)
+    if not yt:
+        log("Zernio: ما لكيت حساب يوتيوب", code, json.dumps(acc, ensure_ascii=False)[:300])
+        return
+    aid = yt.get("_id") or yt.get("id") or yt.get("accountId")
+    for c in cand:
+        title, desc = c["yt_title"], c["yt_desc"]
+        if not c.get("live"):
+            title, desc = title.replace(conf["hashtags"], "#GTA5 #shorts"), desc.replace(conf["hashtags"], "#GTA5 #shorts")
+        body = {"content": desc, "mediaItems": [{"type": "video", "url": f"{site}/v/{c['id']}.mp4"}],
+                "platforms": [{"platform": "youtube", "accountId": aid,
+                               "platformSpecificData": {"title": title[:100], "visibility": "public", "madeForKids": False}}],
+                "publishNow": True}
+        code, r = zernio("/posts", key, body)
+        post = r.get("post") or r
+        if code in (200, 201, 202):
+            url = ""
+            for pf in (post.get("platforms") or []):
+                url = pf.get("platformPostUrl") or url
+            c.update(status="posted", posted_ts=time.time(), posted_day=today, yt_url=url or post.get("platformPostUrl", ""),
+                     zernio_id=post.get("_id") or post.get("id") or "", zernio_status=post.get("status", ""))
+            log("انتشر ✓", c["streamer"], "-", title, "|", c["yt_url"], "| status:", c["zernio_status"])
+        else:
+            c["pub_fail"] = c.get("pub_fail", 0) + 1
+            log("فشل النشر ✗", code, json.dumps(r, ensure_ascii=False)[:400])
+    save_state(st)
 
 
 def ffmpeg_bin():
@@ -257,7 +323,7 @@ def process(c, conf, st):
     raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
     ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, c["title"], c["streamer"], conf["max_seconds"])
     t = clean(c["title"])[:60]
-    rec = dict(c, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
+    rec = dict(c, live=not TEST_RUN, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
                yt_title=f"{t} | {c['streamer']} {conf['hashtags']}"[:100],
                yt_desc=f"Clip from {c['streamer']}'s stream: https://twitch.tv/{c['streamer']}\nOriginal clip: {c['url']}\n\n{conf['hashtags']}")
     with LOCK:
@@ -276,7 +342,8 @@ def prune(conf, st):
         f = os.path.join(READY, c["id"] + ".mp4")
         if c.get("ts", 0) < lim and c["status"] == "ready":
             c["status"] = "expired"
-        if c["status"] != "ready" and os.path.exists(f):
+        keep = c["status"] == "ready" or (c["status"] == "posted" and time.time() - c.get("posted_ts", 0) < 3 * 3600)
+        if not keep and os.path.exists(f):
             os.remove(f)
     save_state(st)
 
@@ -420,6 +487,7 @@ if __name__ == "__main__":
     if cmd == "selftest":
         selftest(conf, st)
     elif cmd == "once":
+        publish(conf, st)
         cycle(conf, st, test)
         prune(conf, st)
     else:

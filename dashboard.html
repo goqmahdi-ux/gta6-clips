@@ -15,13 +15,13 @@ function marks(){try{return JSON.parse(localStorage.getItem(K)||'{}')}catch(e){r
 function mk(id,s){let m=marks();m[id]=s;try{localStorage.setItem(K,JSON.stringify(m))}catch(e){}draw()}
 function tab(t){T=t;tr.className=t=='ready'?'on':'';tp.className=t=='posted'?'on':'';draw()}
 function cp(s,b){navigator.clipboard.writeText(s).then(()=>{let o=b.textContent;b.textContent='انسخ ✓';setTimeout(()=>b.textContent=o,1200)})}
-function draw(){let m=marks();let L=D.filter(c=>c.status=='ready'&&(m[c.id]||'ready')==T);
+function draw(){let m=marks();let L=D.filter(c=>T=='posted'?(c.status=='posted'||(c.status=='ready'&&m[c.id]=='posted')):(c.status=='ready'&&!m[c.id]));
 w.innerHTML=L.length?'':'<div class=e>ماكو مقاطع هنا بعد</div>';L.forEach(c=>{let e=document.createElement('div');e.className='c';
 e.innerHTML=`<video controls playsinline preload=none poster="" src="v/${c.id}.mp4"></video><div class=p><p class=t></p>
 <div class=m></div><div class=r><a class="b g" download href="v/${c.id}.mp4">تنزيل</a>
 <button class=b>نسخ العنوان</button><button class=b>نسخ الوصف</button></div><div class=r>
 ${T=='ready'?'<button class="b g">تم النشر</button><button class="b x">تجاهل</button>':''}</div></div>`;
-e.querySelector('.t').textContent=c.yt_title;e.querySelector('.m').textContent=c.streamer+' · '+c.views+' views';
+e.querySelector('.t').textContent=c.yt_title;e.querySelector('.m').textContent=c.streamer+' · '+c.views+' views';if(c.yt_url){let a=document.createElement('a');a.href=c.yt_url;a.target='_blank';a.textContent='▶ YouTube';a.style.color='#ff5fa2';e.querySelector('.m').append(' · ',a)}
 let B=e.querySelectorAll('button');B[0].onclick=()=>cp(c.yt_title,B[0]);B[1].onclick=()=>cp(c.yt_desc,B[1]);
 if(B[2]){B[2].onclick=()=>mk(c.id,'posted');B[3].onclick=()=>mk(c.id,'skipped')}w.appendChild(e)})}
 async function load(){try{let r=await fetch('state.json?'+Date.now());D=Object.values((await r.json()).clips||{}).sort((a,b)=>(b.ts||0)-(a.ts||0));

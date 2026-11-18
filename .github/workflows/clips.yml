@@ -8,6 +8,10 @@ on:
         description: "تجربة على GTA V"
         type: boolean
         default: false
+      publish_test:
+        description: "انشر مقطع تجربة واحد على يوتيوب"
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -32,6 +36,8 @@ jobs:
       - name: Run bot
         env:
           GTA6_SITE: site
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          PUBLISH_TEST: ${{ inputs.publish_test }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
         run: python3 gta6_bot.py once ${{ inputs.test && '--test' || '' }}
