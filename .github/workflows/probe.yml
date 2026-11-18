@@ -7,13 +7,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: |
-          for u in \
-            "https://kick.com/api/v2/categories/grand-theft-auto-vi/clips?sort=view&time=day" \
-            "https://kick.com/api/v2/clips?category=grand-theft-auto-vi&sort=view&time=day" \
-            "https://kick.com/api/v2/channels/xqc/clips?sort=view&time=day" \
-            "https://kick.com/api/v1/subcategories/grand-theft-auto-vi" \
-            "https://api.kick.com/public/v1/categories?q=grand" ; do
-            echo "== $u"
-            curl -s -m 20 -o /tmp/o -w "HTTP %{http_code}\n" -H "User-Agent: gta6-clips-bot/1.0" -H "Accept: application/json" "$u"
-            head -c 400 /tmp/o; echo
-          done
+          curl -s -m 20 -H "User-Agent: gta6-clips-bot/1.0" -H "Accept: application/json" "https://kick.com/api/v2/categories/grand-theft-auto-vi/clips?sort=view&time=day" > /tmp/o
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/o')); c=d["clips"]; print("N",len(c),"KEYS",list(d.keys()))
+          x=dict(c[0]); print("ITEM",json.dumps({k:(v if not isinstance(v,(dict,list)) else (list(v.keys()) if isinstance(v,dict) else "list")) for k,v in x.items()})[:900])
+          print("CH",json.dumps(x.get("channel"))[:300]); print("CAT",json.dumps(x.get("category"))[:200])
+          for y in c[:8]: print("ROW",y.get("created_at"),y.get("view_count",y.get("views")),y.get("duration"),(y.get("channel") or {}).get("slug"),y.get("title"))
+          PY
