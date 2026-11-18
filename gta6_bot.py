@@ -185,6 +185,41 @@ def helix_clips(conf, games):
              "lang": c.get("language", ""), "created": c.get("created_at", ""), "src": "helix"} for c in d]
 
 
+def slug_of(c):
+    return (c.get("url") or "").split("?")[0].rstrip("/").split("/")[-1] or str(c.get("id"))
+
+
+def gql_game_clips(games, test=False):
+    """بحث عام: أعلى كلبات فئة اللعبة من أي ستريمر (بدون مفاتيح)."""
+    q = ("query($n:String!){game(name:$n){name clips(first:60,criteria:{filter:%s}){edges{node{"
+         "slug title viewCount durationSeconds createdAt language broadcaster{login}}}}}}" % ("LAST_WEEK" if test else "LAST_DAY"))
+    out = []
+    for g in games:
+        try:
+            req = urllib.request.Request("https://gql.twitch.tv/gql", data=json.dumps({"query": q, "variables": {"n": g}}).encode(),
+                                         headers={"Client-ID": "kimne78kx3ncx6brgo4mv6wki5h1ko", "Content-Type": "application/json",
+                                                  "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            game = (d.get("data") or {}).get("game")
+            if not game:
+                log("بحث عام:", g, "| ماكو فئة |", json.dumps(d.get("errors") or "", ensure_ascii=False)[:200])
+                continue
+            for e in ((game.get("clips") or {}).get("edges") or []):
+                n = e.get("node") or {}
+                if n.get("slug") and n.get("broadcaster"):
+                    out.append({"id": n["slug"], "url": "https://clips.twitch.tv/" + n["slug"], "title": n.get("title") or "",
+                                "streamer": n["broadcaster"]["login"], "views": n.get("viewCount") or 0,
+                                "duration": float(n.get("durationSeconds") or 0), "lang": (n.get("language") or "").lower(),
+                                "created": n.get("createdAt") or "", "src": "gql"})
+            log(f"بحث عام ({game.get('name')}): {len(out)} كلب")
+            if out:
+                break
+        except Exception as ex:
+            log("بحث عام فشل:", g, type(ex).__name__, str(ex)[:160])
+    return out
+
+
 def ytdlp():
     b = shutil.which("yt-dlp") or next((x for x in ("/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp") if os.path.exists(x)), None)
     return [b] if b else [sys.executable, "-m", "yt_dlp"]
@@ -250,7 +285,7 @@ def pick(clips, conf, st):
         if len(out) >= room:
             break
         s = c["streamer"].lower()
-        if c["id"] in st["clips"] or not c["url"] or s in blocked or (allow and s not in allow):
+        if c["id"] in st["clips"] or slug_of(c) in st.get("slugs", []) or not c["url"] or s in blocked or (allow and s not in allow):
             continue
         if c["views"] < conf["min_views"] or c["duration"] < conf["min_seconds"]:
             continue
@@ -339,6 +374,7 @@ def process(c, conf, st):
                yt_title=yt_t, yt_desc=yt_d)
     with LOCK:
         st["clips"][c["id"]] = rec
+        st["slugs"] = (st.get("slugs", []) + [slug_of(c)])[-5000:]
         save_state(st)
     if ok and os.path.exists(raw):
         os.remove(raw)
@@ -362,14 +398,19 @@ def prune(conf, st):
 def cycle(conf, st, test=False):
     games = conf["test_game_names"] if test else conf["game_names"]
     try:
-        clips = helix_clips(conf, games) if conf["twitch_client_id"] and conf["twitch_client_secret"] else fallback_clips(conf, games, st, test)
+        if conf["twitch_client_id"] and conf["twitch_client_secret"]:
+            clips = helix_clips(conf, games)
+        else:
+            clips = gql_game_clips(games, test) or fallback_clips(conf, games, st, test)
     except Exception as ex:
         log("خطأ بالمصدر:", str(ex)[:200])
         return 0
     if test:
         conf = dict(conf, min_views=0, languages=[])
     todo = pick(clips, conf, st)
-    log(f"مختار للقص: {len(todo)}")
+    log(f"مختار للقص: {len(todo)}", "|", ", ".join(f"{c['streamer']}:{c['views']}" for c in todo))
+    if os.environ.get("DRY") == "true":
+        return 0
     return sum(1 for c in todo if process(c, conf, st))
 
 

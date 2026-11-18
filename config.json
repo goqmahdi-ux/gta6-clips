@@ -54,13 +54,13 @@
   "languages": [
     "en"
   ],
-  "min_views": 300,
+  "min_views": 100,
   "min_seconds": 8,
   "max_seconds": 59,
   "lookback_hours": 6,
   "max_per_cycle": 5,
   "max_per_day": 30,
-  "max_per_streamer_per_day": 6,
+  "max_per_streamer_per_day": 4,
   "keep_hours": 72,
   "hashtags": "#GTA6 #GTAVI #shorts",
   "max_publish_per_day": 30,
