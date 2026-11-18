@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""GTA6 Clips Bot — يجيب أقوى كلبات GTA 6 من تويتش، يحولها شورت طولي جاهز، ويعرضها بدشبورد للنشر.
+
+  python3 gta6_bot.py run        تشغيل مستمر + دشبورد
+  python3 gta6_bot.py run --test نفس الشي بس على GTA V (للتجربة قبل الإطلاق)
+  python3 gta6_bot.py once       دورة وحدة
+  python3 gta6_bot.py selftest   فحص القص والدشبورد بدون نت
+"""
+import json, os, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+BASE = os.path.dirname(os.path.abspath(__file__))
+RAW, READY, DATA = (os.path.join(BASE, d) for d in ("raw", "ready", "data"))
+STATE_F, CONF_F, LOG_F = os.path.join(DATA, "state.json"), os.path.join(BASE, "config.json"), os.path.join(DATA, "bot.log")
+SITE = os.environ.get("GTA6_SITE")  # وضع السحابة: المقاطع والحالة بمجلد الموقع
+if SITE:
+    READY, STATE_F = os.path.join(SITE, "v"), os.path.join(SITE, "state.json")
+for d in (RAW, READY, DATA):
+    os.makedirs(d, exist_ok=True)
+
+DEFAULTS = {
+    "game_names": ["Grand Theft Auto VI", "Grand Theft Auto 6", "GTA VI"],
+    "test_game_names": ["Grand Theft Auto V"],
+    "twitch_client_id": "", "twitch_client_secret": "",
+    # تستخدم بس اذا ماكو مفاتيح تويتش (الوضع الاحتياطي)
+    "streamers": ["kaicenat", "xqc", "caseoh_", "jynxzi", "summit1g", "lirik", "shroud", "timthetatman",
+                  "sykkuno", "moistcr1tikal", "hasanabi", "agent00", "lacy", "stableronaldo", "plaqueboymax"],
+    "blocked": [], "allow_only": [],
+    "languages": ["en"], "min_views": 300, "min_seconds": 8, "max_seconds": 59,
+    "lookback_hours": 6, "max_per_cycle": 5, "max_per_day": 15, "max_per_streamer_per_day": 3,
+    "cycle_minutes": 20, "port": 8099, "keep_hours": 72, "hashtags": "#GTA6 #GTAVI #shorts",
+}
+LOCK = threading.Lock()
+
+
+def ffmpeg_bin():
+    f = shutil.which("ffmpeg")
+    if not f:
+        try:
+            import imageio_ffmpeg
+            f = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            f = "ffmpeg"
+    return f
+
+
+def log(*a):
+    line = datetime.now().strftime("%m-%d %H:%M:%S ") + " ".join(str(x) for x in a)
+    print(line, flush=True)
+    with open(LOG_F, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def load_conf():
+    c = dict(DEFAULTS)
+    if os.path.exists(CONF_F):
+        c.update(json.load(open(CONF_F, encoding="utf-8")))
+    else:
+        json.dump(DEFAULTS, open(CONF_F, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    for k, e in (("twitch_client_id", "TWITCH_CLIENT_ID"), ("twitch_client_secret", "TWITCH_CLIENT_SECRET")):
+        c[k] = os.environ.get(e) or c[k]
+    return c
+
+
+def load_state():
+    if os.path.exists(STATE_F):
+        return json.load(open(STATE_F, encoding="utf-8"))
+    return {"clips": {}}
+
+
+def save_state(st):
+    tmp = STATE_F + ".tmp"
+    json.dump(st, open(tmp, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+    os.replace(tmp, STATE_F)
+
+
+# ---------------- المصادر ----------------
+def http_json(url, headers=None, data=None):
+    req = urllib.request.Request(url, headers=headers or {}, data=data)
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def helix_clips(conf, games):
+    """الطريق الرسمي: أعلى كلبات فئة اللعبة من كل الستريمرز."""
+    q = urllib.parse.urlencode({"client_id": conf["twitch_client_id"], "client_secret": conf["twitch_client_secret"],
+                                "grant_type": "client_credentials"}).encode()
+    tok = http_json("https://id.twitch.tv/oauth2/token", data=q)["access_token"]
+    h = {"Client-Id": conf["twitch_client_id"], "Authorization": "Bearer " + tok}
+    gid = None
+    for g in games:
+        d = http_json("https://api.twitch.tv/helix/games?" + urllib.parse.urlencode({"name": g}), h)["data"]
+        if d:
+            gid, gname = d[0]["id"], d[0]["name"]
+            break
+    if not gid:
+        log("ما لكيت فئة اللعبة بتويتش:", games)
+        return []
+    now = datetime.now(timezone.utc)
+    p = {"game_id": gid, "first": 100, "started_at": (now - timedelta(hours=conf["lookback_hours"])).strftime("%Y-%m-%dT%H:%M:%SZ"),
+         "ended_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    d = http_json("https://api.twitch.tv/helix/clips?" + urllib.parse.urlencode(p), h)["data"]
+    log(f"تويتش ({gname}): {len(d)} كلب")
+    return [{"id": c["id"], "url": c["url"], "title": c["title"], "streamer": c["broadcaster_name"],
+             "views": c.get("view_count", 0), "duration": float(c.get("duration") or 0),
+             "lang": c.get("language", ""), "created": c.get("created_at", ""), "src": "helix"} for c in d]
+
+
+def ytdlp():
+    b = shutil.which("yt-dlp") or next((x for x in ("/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp") if os.path.exists(x)), None)
+    return [b] if b else [sys.executable, "-m", "yt_dlp"]
+
+
+def fallback_clips(conf, games, st, test=False):
+    """بدون مفاتيح: كلبات قائمة الستريمرز، ويفرز حسب فئة اللعبة من بيانات كل كلب."""
+    out, rng = [], ("7d" if test else "24hr")
+    for s in conf["streamers"]:
+        try:
+            r = subprocess.run(ytdlp() + ["--flat-playlist", "-J", "--playlist-end", "20",
+                                f"https://www.twitch.tv/{s}/clips?filter=clips&range={rng}"],
+                               capture_output=True, text=True, timeout=90)
+            ents = (json.loads(r.stdout).get("entries") or []) if r.stdout.strip() else []
+            if not ents:
+                log("فارغ:", s, "|", (r.stderr or "").strip().replace("\n", " ")[-220:])
+            for e in ents:
+                out.append({"id": str(e.get("id")), "url": e.get("url") or e.get("webpage_url"), "title": e.get("title") or "",
+                            "streamer": s, "views": e.get("view_count") or 0, "duration": float(e.get("duration") or 0),
+                            "lang": "", "created": "", "src": "fallback"})
+        except Exception as ex:
+            log("فشل جلب", s, str(ex)[:160])
+    log(f"الوضع الاحتياطي: {len(out)} كلب من القوائم")
+    checked = set(st.setdefault("checked", []))
+    cand = [c for c in sorted(out, key=lambda x: -x["views"]) if c["url"] and c["id"] not in checked and c["id"] not in st["clips"]][:30]
+    want, keep, seen = [g.lower() for g in games], [], {}
+    for c in cand:
+        try:
+            r = subprocess.run(ytdlp() + ["-J", "--no-playlist", c["url"]], capture_output=True, text=True, timeout=60)
+            m = json.loads(r.stdout)
+            cats = [x.lower() for x in (m.get("categories") or [])]
+            c.update(views=m.get("view_count") or c["views"], duration=float(m.get("duration") or c["duration"]),
+                     title=m.get("title") or c["title"], id=str(m.get("id") or c["id"]))
+            for x in cats or ["?"]:
+                seen[x] = seen.get(x, 0) + 1
+            if any(x in want for x in cats):
+                keep.append(c)
+            else:
+                st["checked"].append(c["id"])
+        except Exception as ex:
+            log("فشل بيانات", c["id"], str(ex)[:120], (r.stderr or "")[-120:] if "r" in dir() else "")
+    st["checked"] = st["checked"][-3000:]
+    log("الفئات الي شفتها:", json.dumps(seen, ensure_ascii=False)[:400])
+    log(f"مطابق للعبة: {len(keep)}")
+    if test and not keep:
+        log("تجربة: ماكو مطابق، آخذ أعلى 2 بس لفحص التنزيل والقص")
+        keep = cand[:2]
+    return keep
+
+
+def pick(clips, conf, st):
+    """فلترة وترتيب — يرجع الي يستاهل ينكص."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    done_today = [c for c in st["clips"].values() if c.get("day") == today and c["status"] in ("ready", "posted")]
+    per = {}
+    for c in done_today:
+        per[c["streamer"].lower()] = per.get(c["streamer"].lower(), 0) + 1
+    room = min(conf["max_per_cycle"], conf["max_per_day"] - len(done_today))
+    blocked = {b.lower() for b in conf["blocked"]}
+    allow = {a.lower() for a in conf["allow_only"]}
+    out = []
+    for c in sorted(clips, key=lambda x: -x["views"]):
+        if len(out) >= room:
+            break
+        s = c["streamer"].lower()
+        if c["id"] in st["clips"] or not c["url"] or s in blocked or (allow and s not in allow):
+            continue
+        if c["views"] < conf["min_views"] or c["duration"] < conf["min_seconds"]:
+            continue
+        if conf["languages"] and c["lang"] and c["lang"].split("-")[0] not in conf["languages"]:
+            continue
+        if per.get(s, 0) >= conf["max_per_streamer_per_day"]:
+            continue
+        per[s] = per.get(s, 0) + 1
+        out.append(c)
+    return out
+
+
+# ---------------- القص والتحويل ----------------
+FONTS = ["/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf",
+         "/System/Library/Fonts/Helvetica.ttc", "C:/Windows/Fonts/arialbd.ttf",
+         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]
+
+
+def clean(t):
+    t = "".join(ch for ch in t if 31 < ord(ch) < 0x2000)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def wrap(t, width=24, lines=3):
+    out, cur = [], ""
+    for w in t.split():
+        if len(cur) + len(w) + 1 > width and cur:
+            out.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    out.append(cur)
+    if len(out) > lines:
+        out = out[:lines]
+        out[-1] = out[-1][:width - 1] + "…"
+    return [l for l in out if l]
+
+
+def make_short(src, dst, title, streamer, max_s):
+    work = os.path.dirname(dst)
+    font = next((f for f in FONTS if os.path.exists(f)), None)
+    base = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:4,eq=brightness=-0.18[bg];"
+            "[0:v]scale=-2:860,crop='min(iw,1080)':860[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,fps=30")
+    txt, tmp = "", []
+    if font:
+        ff = font.replace(":", "\\:")
+        rows = wrap(clean(title).upper())
+        for i, row in enumerate(rows):
+            p = os.path.join(work, f"_t{i}.txt")
+            open(p, "w", encoding="utf-8").write(row)
+            tmp.append(p)
+            txt += (f",drawtext=fontfile='{ff}':textfile=_t{i}.txt:fontsize=66:fontcolor=white:borderw=7:"
+                    f"bordercolor=black:x=(w-text_w)/2:y={300 - (len(rows) - 1) * 40 + i * 84}")
+        p = os.path.join(work, "_c.txt")
+        open(p, "w", encoding="utf-8").write("twitch.tv/" + clean(streamer))
+        tmp.append(p)
+        txt += (f",drawtext=fontfile='{ff}':textfile=_c.txt:fontsize=44:fontcolor=white@0.95:borderw=5:"
+                "bordercolor=black:x=(w-text_w)/2:y=1470")
+    enc = ["-map", "[v]", "-map", "0:a?", "-t", str(max_s), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", os.path.basename(dst)]
+    for fc in ([base + txt + "[v]", base + "[v]"] if txt else [base + "[v]"]):
+        r = subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-i", os.path.abspath(src), "-filter_complex", fc] + enc,
+                           cwd=work, capture_output=True, text=True)
+        if r.returncode == 0 and os.path.getsize(dst) > 10000:
+            break
+        log("ffmpeg:", r.stderr.strip()[-200:])
+    for p in tmp:
+        os.path.exists(p) and os.remove(p)
+    return os.path.exists(dst) and os.path.getsize(dst) > 10000
+
+
+def download(url, dst):
+    r = subprocess.run(ytdlp() + ["-q", "--no-warnings", "-f", "best[height<=1080]/best",
+                        "-o", dst, url], capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        log("فشل تنزيل:", r.stderr.strip()[-200:])
+    return os.path.exists(dst)
+
+
+def process(c, conf, st):
+    raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
+    ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, c["title"], c["streamer"], conf["max_seconds"])
+    t = clean(c["title"])[:60]
+    rec = dict(c, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
+               yt_title=f"{t} | {c['streamer']} {conf['hashtags']}"[:100],
+               yt_desc=f"Clip from {c['streamer']}'s stream: https://twitch.tv/{c['streamer']}\nOriginal clip: {c['url']}\n\n{conf['hashtags']}")
+    with LOCK:
+        st["clips"][c["id"]] = rec
+        save_state(st)
+    if ok and os.path.exists(raw):
+        os.remove(raw)
+    log("جاهز ✓" if ok else "فشل ✗", c["streamer"], "-", t)
+    return ok
+
+
+def prune(conf, st):
+    """يمسح المقاطع الأقدم من keep_hours حتى ما يكبر المجلد."""
+    lim = time.time() - conf.get("keep_hours", 72) * 3600
+    for c in st["clips"].values():
+        f = os.path.join(READY, c["id"] + ".mp4")
+        if c.get("ts", 0) < lim and c["status"] == "ready":
+            c["status"] = "expired"
+        if c["status"] != "ready" and os.path.exists(f):
+            os.remove(f)
+    save_state(st)
+
+
+def cycle(conf, st, test=False):
+    games = conf["test_game_names"] if test else conf["game_names"]
+    try:
+        clips = helix_clips(conf, games) if conf["twitch_client_id"] and conf["twitch_client_secret"] else fallback_clips(conf, games, st, test)
+    except Exception as ex:
+        log("خطأ بالمصدر:", str(ex)[:200])
+        return 0
+    if test:
+        conf = dict(conf, min_views=0, languages=[])
+    todo = pick(clips, conf, st)
+    log(f"مختار للقص: {len(todo)}")
+    return sum(1 for c in todo if process(c, conf, st))
+
+
+# ---------------- الدشبورد ----------------
+PAGE = """<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>GTA6 Clips</title><style>
+body{margin:0;background:#0d0d12;color:#eee;font-family:-apple-system,Segoe UI,Tahoma,sans-serif}
+header{padding:14px 16px;background:#16161f;position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:18px;margin:0;color:#ff5fa2}.tabs button,.b{border:0;border-radius:10px;padding:10px 14px;font-size:15px;color:#fff;background:#2a2a38}
+.tabs button.on{background:#ff5fa2}.wrap{padding:12px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.c{background:#16161f;border-radius:14px;overflow:hidden}.c video{width:100%;aspect-ratio:9/16;background:#000;display:block}
+.p{padding:12px}.t{direction:ltr;text-align:left;font-size:14px;line-height:1.4;margin:0 0 6px}.m{color:#999;font-size:12px;direction:ltr;text-align:left}
+.r{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.b{flex:1;text-align:center;text-decoration:none;min-width:88px}
+.g{background:#1f9d55}.x{background:#5a2330}.e{padding:40px;text-align:center;color:#888}
+</style><header><h1>GTA6 Clips</h1><div class=tabs><button id=tr class=on onclick="tab('ready')">جاهز</button>
+<button id=tp onclick="tab('posted')">منشور</button></div></header><div id=w class=wrap></div><script>
+let T='ready';function tab(t){T=t;tr.className=t=='ready'?'on':'';tp.className=t=='posted'?'on':'';load()}
+function cp(s,b){navigator.clipboard.writeText(s).then(()=>{let o=b.textContent;b.textContent='انسخ ✓';setTimeout(()=>b.textContent=o,1200)})}
+async function mk(id,s){await fetch('/api/mark?id='+encodeURIComponent(id)+'&s='+s);load()}
+async function load(){let d=await (await fetch('/api/list')).json();let L=d.filter(c=>c.status==T);
+w.innerHTML=L.length?'':'<div class=e>ماكو مقاطع هنا بعد</div>';L.forEach(c=>{let e=document.createElement('div');e.className='c';
+e.innerHTML=`<video controls playsinline preload=metadata src="/v/${c.id}.mp4"></video><div class=p><p class=t></p>
+<div class=m>${c.streamer} · ${c.views} views</div><div class=r><a class="b g" href="/v/${c.id}.mp4?dl=1">تنزيل</a>
+<button class=b>نسخ العنوان</button><button class=b>نسخ الوصف</button></div><div class=r>
+${T=='ready'?'<button class="b g">تم النشر</button><button class="b x">تجاهل</button>':''}</div></div>`;
+e.querySelector('.t').textContent=c.yt_title;let B=e.querySelectorAll('button');B[0].onclick=()=>cp(c.yt_title,B[0]);
+B[1].onclick=()=>cp(c.yt_desc,B[1]);if(B[2]){B[2].onclick=()=>mk(c.id,'posted');B[3].onclick=()=>mk(c.id,'skipped')}w.appendChild(e)})}
+load();setInterval(()=>{if(!document.querySelector('video:not([paused])'))load()},60000)</script></html>"""
+
+
+def make_handler(st):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query)
+            if u.path == "/":
+                return self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            if u.path == "/api/list":
+                with LOCK:
+                    L = sorted(st["clips"].values(), key=lambda c: -c.get("ts", 0))
+                return self._send(200, json.dumps(L, ensure_ascii=False).encode("utf-8"), "application/json")
+            if u.path == "/api/mark":
+                cid, s = q.get("id", [""])[0], q.get("s", [""])[0]
+                with LOCK:
+                    if cid in st["clips"] and s in ("posted", "skipped", "ready"):
+                        st["clips"][cid]["status"] = s
+                        save_state(st)
+                return self._send(200, b"{}", "application/json")
+            m = re.fullmatch(r"/v/([\w\-]+)\.mp4", u.path)
+            if m and os.path.exists(os.path.join(READY, m.group(1) + ".mp4")):
+                return self._file(os.path.join(READY, m.group(1) + ".mp4"), "dl" in q)
+            self._send(404, b"not found", "text/plain")
+
+        def _file(self, path, dl):
+            size = os.path.getsize(path)
+            a, b = 0, size - 1
+            rng = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+            if rng and (rng.group(1) or rng.group(2)):
+                if rng.group(1):
+                    a = int(rng.group(1))
+                    b = min(int(rng.group(2)), size - 1) if rng.group(2) else size - 1
+                else:
+                    a = max(0, size - int(rng.group(2)))
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {a}-{b}/{size}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(max(0, b - a + 1)))
+            if dl:
+                self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(path)}"')
+            self.end_headers()
+            try:
+                with open(path, "rb") as f:
+                    f.seek(a)
+                    left = b - a + 1
+                    while left > 0:
+                        chunk = f.read(min(262144, left))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+    return H
+
+
+def serve(st, port):
+    srv = ThreadingHTTPServer(("0.0.0.0", port), make_handler(st))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    log(f"الدشبورد: http://localhost:{port}")
+    return srv
+
+
+def selftest(conf, st):
+    src = os.path.join(RAW, "selftest.mp4")
+    subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=12", "-f", "lavfi",
+                    "-i", "sine=f=440:d=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", src], check=True)
+    c = {"id": "selftest", "url": "local", "title": "He really jumped the bridge on day one!! 😱", "streamer": "TestStreamer",
+         "views": 999, "duration": 12.0, "lang": "en", "created": "", "src": "helix"}
+    assert process(c, conf, st), "فشل التحويل"
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,width,height:format=duration", "-of", "json",
+                        os.path.join(READY, "selftest.mp4")], capture_output=True, text=True)
+    info = json.loads(p.stdout)
+    v = next(s for s in info["streams"] if s["codec_type"] == "video")
+    assert (v["width"], v["height"]) == (1080, 1920), v
+    assert any(s["codec_type"] == "audio" for s in info["streams"]), "ماكو صوت"
+    log("selftest OK:", v["width"], "x", v["height"], info["format"]["duration"], "s")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
+    test = "--test" in sys.argv
+    conf, st = load_conf(), load_state()
+    if cmd == "selftest":
+        selftest(conf, st)
+    elif cmd == "once":
+        cycle(conf, st, test)
+        prune(conf, st)
+    else:
+        serve(st, conf["port"])
+        while True:
+            conf = load_conf()
+            cycle(conf, st, test)
+            time.sleep(conf["cycle_minutes"] * 60)

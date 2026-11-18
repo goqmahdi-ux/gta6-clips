@@ -1,0 +1,6 @@
+data/
+raw/
+ready/
+site/
+.venv/
+__pycache__/

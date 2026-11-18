@@ -1,0 +1,9 @@
+{
+  "game_names": ["Grand Theft Auto VI", "Grand Theft Auto 6", "GTA VI"],
+  "test_game_names": ["Grand Theft Auto V"],
+  "streamers": ["kaicenat", "xqc", "caseoh_", "jynxzi", "summit1g", "lirik", "shroud", "timthetatman", "sykkuno", "moistcr1tikal", "hasanabi", "agent00", "lacy", "stableronaldo", "plaqueboymax"],
+  "blocked": [], "allow_only": [],
+  "languages": ["en"], "min_views": 300, "min_seconds": 8, "max_seconds": 59,
+  "lookback_hours": 6, "max_per_cycle": 5, "max_per_day": 15, "max_per_streamer_per_day": 3,
+  "keep_hours": 72, "hashtags": "#GTA6 #GTAVI #shorts"
+}
