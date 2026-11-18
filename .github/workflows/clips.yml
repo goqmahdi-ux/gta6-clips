@@ -43,6 +43,7 @@ jobs:
           GTA6_SITE: site
           GH_TOKEN: ${{ github.token }}
           ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
           PUBLISH_TEST: ${{ inputs.publish_test }}
