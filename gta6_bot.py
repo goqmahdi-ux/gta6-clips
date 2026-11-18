@@ -59,11 +59,14 @@ def make_copy(c, live=True):
     """عنوان ووصف بالعربي والإنكليزي."""
     g, tag = ("GTA 6", "#GTA6 #GTAVI #جي_تي_اي_6 #قراند6") if live else ("GTA 5", "#GTA5 #GTAV #جي_تي_اي_5 #قراند5")
     t, s_ = clean(c["title"])[:38].strip(), c["streamer"]
+    host = "kick.com" if c.get("src") == "kick" else "twitch.tv"
+    if len(re.sub(r"[^A-Za-z\u0600-\u06FF]", "", t)) < 4 or re.search(r"\b(sex|porn|nude|fuck|nigg\w*)\b", t, re.I):
+        t = f"{g} moment"
     title = f"{t} | {s_} 🔥 لقطات {g} #{g.replace(' ', '')} #shorts"[:100]
-    desc = (f"{t}\n🎮 Clip from {s_}'s stream: https://twitch.tv/{s_}\n"
+    desc = (f"{t}\n🎮 Clip from {s_}'s stream: https://{host}/{s_}\n"
             f"The best {g} stream moments, every day. Subscribe for more!\n\n"
             f"🎮 لقطة من بث {s_}\nأقوى لحظات {g} من البثوث يومياً. اشترك بالقناة حتى توصلك أول بأول!\n\n"
-            f"Original clip: {c['url']}\n\n{tag} #shorts")
+            f"Original clip: {c.get('page') or c['url']}\n\n{tag} #shorts")
     return title, desc
 
 
@@ -220,6 +223,26 @@ def gql_game_clips(games, test=False):
     return out
 
 
+def kick_clips(conf):
+    """كلبات فئة اللعبة على Kick (الأعلى مشاهدة آخر يوم)."""
+    out = []
+    try:
+        req = urllib.request.Request("https://kick.com/api/v2/categories/%s/clips?sort=view&time=day" % conf.get("kick_category", "grand-theft-auto-vi"),
+                                     headers=UA)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        for n in d.get("clips") or []:
+            ch = (n.get("channel") or {}).get("slug")
+            if n.get("id") and ch and n.get("clip_url") and n.get("privacy", "public") == "public" and not n.get("is_mature"):
+                out.append({"id": n["id"], "url": n["clip_url"], "page": f"https://kick.com/{ch}/clips/{n['id']}", "title": n.get("title") or "",
+                            "streamer": ch, "views": n.get("view_count") or n.get("views") or 0, "duration": float(n.get("duration") or 0),
+                            "lang": "", "created": n.get("created_at") or "", "src": "kick"})
+        log(f"Kick: {len(out)} كلب")
+    except Exception as ex:
+        log("Kick فشل:", type(ex).__name__, str(ex)[:160])
+    return out
+
+
 def ytdlp():
     b = shutil.which("yt-dlp") or next((x for x in ("/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp") if os.path.exists(x)), None)
     return [b] if b else [sys.executable, "-m", "yt_dlp"]
@@ -326,7 +349,7 @@ def wrap(t, width=24, lines=3):
     return [l for l in out if l]
 
 
-def make_short(src, dst, title, streamer, max_s):
+def make_short(src, dst, title, streamer, max_s, host="twitch.tv"):
     work = os.path.dirname(dst)
     font = next((f for f in FONTS if os.path.exists(f)), None)
     base = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:4,eq=brightness=-0.18[bg];"
@@ -342,7 +365,7 @@ def make_short(src, dst, title, streamer, max_s):
             txt += (f",drawtext=fontfile='{ff}':textfile=_t{i}.txt:fontsize=66:fontcolor=white:borderw=7:"
                     f"bordercolor=black:x=(w-text_w)/2:y={300 - (len(rows) - 1) * 40 + i * 84}")
         p = os.path.join(work, "_c.txt")
-        open(p, "w", encoding="utf-8").write("twitch.tv/" + clean(streamer))
+        open(p, "w", encoding="utf-8").write(host + "/" + clean(streamer))
         tmp.append(p)
         txt += (f",drawtext=fontfile='{ff}':textfile=_c.txt:fontsize=44:fontcolor=white@0.95:borderw=5:"
                 "bordercolor=black:x=(w-text_w)/2:y=1470")
@@ -360,6 +383,12 @@ def make_short(src, dst, title, streamer, max_s):
 
 
 def download(url, dst):
+    if ".m3u8" in url:  # Kick
+        r = subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error", "-user_agent", UA["User-Agent"], "-i", url, "-t", "70",
+                            "-c", "copy", "-bsf:a", "aac_adtstoasc", dst], capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            log("فشل تنزيل Kick:", r.stderr.strip()[-200:])
+        return os.path.exists(dst) and os.path.getsize(dst) > 10000
     r = subprocess.run(ytdlp() + ["-q", "--no-warnings", "-f", "best[height<=1080]/best",
                         "-o", dst, url], capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
@@ -369,7 +398,9 @@ def download(url, dst):
 
 def process(c, conf, st):
     raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
-    ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, c["title"], c["streamer"], conf["max_seconds"])
+    vt = make_copy(c, not TEST_RUN)[0].split(" | ")[0]
+    ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, vt, c["streamer"], conf["max_seconds"],
+                                                                        "kick.com" if c.get("src") == "kick" else "twitch.tv")
     t = clean(c["title"])[:60]
     yt_t, yt_d = make_copy(c, not TEST_RUN)
     rec = dict(c, live=not TEST_RUN, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
@@ -404,6 +435,8 @@ def cycle(conf, st, test=False):
             clips = helix_clips(conf, games)
         else:
             clips = gql_game_clips(games, test) or fallback_clips(conf, games, st, test)
+        if not test:
+            clips = clips + kick_clips(conf)
     except Exception as ex:
         log("خطأ بالمصدر:", str(ex)[:200])
         return 0
