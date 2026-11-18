@@ -93,5 +93,6 @@
     "mrk",
     "tobiii"
   ],
-  "not_before": "2026-11-18T05:00:00Z"
+  "not_before": "2026-11-18T05:00:00Z",
+  "buffer_enabled": false
 }

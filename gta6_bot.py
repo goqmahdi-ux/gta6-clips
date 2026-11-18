@@ -178,7 +178,7 @@ def buffer_publish(c, title, desc, url, st):
     """طريق نشر ثاني عبر Buffer. يرجع True إذا انقبل المنشور."""
     key = "".join((os.environ.get("BUFFER_API_KEY") or "").split())
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if not key or st.get("buffer_limited_until", "") > now:
+    if not key or st.get("buffer_limited_until", "") > now or not load_conf().get("buffer_enabled", True):
         return False
     if not st.get("buffer_channel"):
         code, r = buffer_gql("query{account{organizations{id name}}}", {}, key)
@@ -226,7 +226,7 @@ def publish(conf, st):
     ptest = os.environ.get("PUBLISH_TEST") == "true"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     z_ok = bool(key) and not st.get("rate_limited_until", "") > now
-    b_ok = bool(bkey) and not st.get("buffer_limited_until", "") > now
+    b_ok = bool(bkey) and not st.get("buffer_limited_until", "") > now and conf.get("buffer_enabled", True)
     if not (z_ok or b_ok):
         return
     today = datetime.now().strftime("%Y-%m-%d")
