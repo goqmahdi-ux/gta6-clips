@@ -624,6 +624,13 @@ def deploy_and_publish(conf, st):
 
 
 def cycle(conf, st, test=False):
+    if not st.get("buffer_fix_1"):
+        for c in st["clips"].values():  # مقاطع انحسبت منشورة عبر Buffer بس يوتيوب رفضها
+            if c.get("via") == "buffer" and not c.get("yt_url") and c.get("status") == "posted":
+                c["status"] = "ready"
+                for k in ("posted_ts", "posted_day", "via", "buffer_id"):
+                    c.pop(k, None)
+        st["buffer_fix_1"] = True
     if not st.get("pubfail_reset_1"):
         for c in st["clips"].values():
             c.pop("pub_fail", None)
