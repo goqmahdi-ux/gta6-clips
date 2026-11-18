@@ -289,6 +289,8 @@ def pick(clips, conf, st):
             continue
         if c["views"] < conf["min_views"] or c["duration"] < conf["min_seconds"]:
             continue
+        if not TEST_RUN and c.get("created") and c["created"] < conf.get("not_before", ""):
+            continue  # قبل فتح اللعبة = مو كيم بلاي
         if conf["languages"] and c["lang"] and c["lang"].split("-")[0] not in conf["languages"]:
             continue
         if per.get(s, 0) >= conf["max_per_streamer_per_day"]:
