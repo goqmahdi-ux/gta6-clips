@@ -1,0 +1,19 @@
+name: probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: |
+          for u in \
+            "https://kick.com/api/v2/categories/grand-theft-auto-vi/clips?sort=view&time=day" \
+            "https://kick.com/api/v2/clips?category=grand-theft-auto-vi&sort=view&time=day" \
+            "https://kick.com/api/v2/channels/xqc/clips?sort=view&time=day" \
+            "https://kick.com/api/v1/subcategories/grand-theft-auto-vi" \
+            "https://api.kick.com/public/v1/categories?q=grand" ; do
+            echo "== $u"
+            curl -s -m 20 -o /tmp/o -w "HTTP %{http_code}\n" -H "User-Agent: gta6-clips-bot/1.0" -H "Accept: application/json" "$u"
+            head -c 400 /tmp/o; echo
+          done
