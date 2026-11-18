@@ -57,7 +57,7 @@ def zernio(path, key, body=None):
 
 def publish(conf, st):
     """ينشر على يوتيوب عبر Zernio المقاطع الجاهزة من التشغيلات السابقة (ملفها صار على الصفحة)."""
-    key = os.environ.get("ZERNIO_API_KEY")
+    key = "".join((os.environ.get("ZERNIO_API_KEY") or "").split())
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not key or "/" not in repo:
         return
@@ -487,7 +487,10 @@ if __name__ == "__main__":
     if cmd == "selftest":
         selftest(conf, st)
     elif cmd == "once":
-        publish(conf, st)
+        try:
+            publish(conf, st)
+        except Exception as ex:
+            log("خطأ بالنشر:", type(ex).__name__, str(ex)[:200])
         cycle(conf, st, test)
         prune(conf, st)
     else:
