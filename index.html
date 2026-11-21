@@ -1,0 +1,29 @@
+<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex"><title>GTA6 Clips</title><style>
+body{margin:0;background:#0d0d12;color:#eee;font-family:-apple-system,Segoe UI,Tahoma,sans-serif}
+header{padding:14px 16px;background:#16161f;position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:18px;margin:0;color:#ff5fa2}.tabs button,.b{border:0;border-radius:10px;padding:10px 14px;font-size:15px;color:#fff;background:#2a2a38}
+.tabs button.on{background:#ff5fa2}.wrap{padding:12px;display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.c{background:#16161f;border-radius:14px;overflow:hidden}.c video{width:100%;aspect-ratio:9/16;background:#000;display:block}
+.p{padding:12px}.t{direction:ltr;text-align:left;font-size:14px;line-height:1.4;margin:0 0 6px}.m{color:#999;font-size:12px;direction:ltr;text-align:left}
+.r{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.b{flex:1;text-align:center;text-decoration:none;min-width:88px}
+.g{background:#1f9d55}.x{background:#5a2330}.e{padding:40px;text-align:center;color:#888}#u{color:#777;font-size:12px;padding:8px 16px}
+</style><header><h1>GTA6 Clips</h1><div class=tabs><button id=tr class=on onclick="tab('ready')">جاهز</button>
+<button id=tp onclick="tab('posted')">منشور</button></div></header><div id=u></div><div id=w class=wrap></div><script>
+let T='ready',D=[];const K='gta6marks';
+function marks(){try{return JSON.parse(localStorage.getItem(K)||'{}')}catch(e){return {}}}
+function mk(id,s){let m=marks();m[id]=s;try{localStorage.setItem(K,JSON.stringify(m))}catch(e){}draw()}
+function tab(t){T=t;tr.className=t=='ready'?'on':'';tp.className=t=='posted'?'on':'';draw()}
+function cp(s,b){navigator.clipboard.writeText(s).then(()=>{let o=b.textContent;b.textContent='انسخ ✓';setTimeout(()=>b.textContent=o,1200)})}
+function draw(){let m=marks();let L=D.filter(c=>T=='posted'?(c.status=='posted'||(c.status=='ready'&&m[c.id]=='posted')):(c.status=='ready'&&!m[c.id]));
+w.innerHTML=L.length?'':'<div class=e>ماكو مقاطع هنا بعد</div>';L.forEach(c=>{let e=document.createElement('div');e.className='c';
+e.innerHTML=`<video controls playsinline preload=none poster="" src="v/${c.id}.mp4"></video><div class=p><p class=t></p>
+<div class=m></div><div class=r><a class="b g" download href="v/${c.id}.mp4">تنزيل</a>
+<button class=b>نسخ العنوان</button><button class=b>نسخ الوصف</button></div><div class=r>
+${T=='ready'?'<button class="b g">تم النشر</button><button class="b x">تجاهل</button>':''}</div></div>`;
+e.querySelector('.t').textContent=c.yt_title;e.querySelector('.m').textContent=c.streamer+(c.yt_views!=null?' · يوتيوب: '+c.yt_views+' مشاهدة':' · '+c.views+' views')+(c.style?' · '+c.style:'');if(c.yt_url){let a=document.createElement('a');a.href=c.yt_url;a.target='_blank';a.textContent='▶ YouTube';a.style.color='#ff5fa2';e.querySelector('.m').append(' · ',a)}
+let B=e.querySelectorAll('button');B[0].onclick=()=>cp(c.yt_title,B[0]);B[1].onclick=()=>cp(c.yt_desc,B[1]);
+if(B[2]){B[2].onclick=()=>mk(c.id,'posted');B[3].onclick=()=>mk(c.id,'skipped')}w.appendChild(e)})}
+async function load(){try{let r=await fetch('state.json?'+Date.now());D=Object.values((await r.json()).clips||{}).sort((a,b)=>(b.ts||0)-(a.ts||0));
+let last=D[0]&&D[0].ts?new Date(D[0].ts*1000).toLocaleString('ar-IQ'):'—';u.textContent='آخر مقطع: '+last;draw()}catch(e){w.innerHTML='<div class=e>بعده ماكو بيانات</div>'}}
+load()</script></html>
