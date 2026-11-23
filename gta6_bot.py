@@ -91,7 +91,7 @@ def pick_style(st):
     if min(used.values()) < 3:
         return min(used, key=lambda k: (used[k], random.random()))
     scored = {k: v[0] for k, v in stats.items() if v[0] is not None and v[1] >= 2}
-    if scored and random.random() < 0.75:
+    if scored and max(scored.values()) > 0 and random.random() < 0.75:
         return max(scored, key=scored.get)
     return random.choice(list(STYLES))
 
@@ -155,6 +155,7 @@ def refresh_views(conf, st):
     stats = style_stats(st)
     st["style_stats"] = stats
     dead = [c["streamer"] for c in posted if c.get("yt_url") and c.get("live") and c.get("yt_views") == 0 and time.time() - c.get("posted_ts", 0) > 3 * 3600]
+    log("الأشكال:", json.dumps(format_stats(st), ensure_ascii=False))
     log(f"مشاهدات: حدثت {hit}/{len(posted)} |", " ".join(f"{k}:{v[0]}/h({v[1]})" for k, v in stats.items()),
         ("| ⚠ صفر مشاهدات بعد 3 ساعات: " + ",".join(dead[:5])) if dead else "")
     save_state(st)
@@ -229,18 +230,27 @@ def publish(conf, st):
     b_ok = bool(bkey) and not st.get("buffer_limited_until", "") > now and conf.get("buffer_enabled", True)
     if not (z_ok or b_ok):
         return
+    if not ptest:  # توزيع النشر على اليوم بدل دفعة وحدة
+        hrs = conf.get("publish_hours_utc")
+        if hrs and datetime.now(timezone.utc).hour not in hrs:
+            return
+        last = max([c.get("posted_ts", 0) for c in st["clips"].values() if c.get("status") == "posted"] or [0])
+        if time.time() - last < conf.get("min_gap_minutes", 0) * 60:
+            return
     today = datetime.now().strftime("%Y-%m-%d")
     done = sum(1 for c in st["clips"].values() if c.get("posted_day") == today)
     room = min(4 if ptest else conf.get("publish_per_run", 1), conf.get("max_publish_per_day", 8) - done)
     cand = [c for c in st["clips"].values() if c["status"] == "ready" and (c.get("live") or ptest)
             and c.get("pub_fail", 0) < 3 and os.path.exists(os.path.join(READY, c["id"] + ".mp4"))]
-    cand = sorted(cand, key=lambda c: -c.get("views", 0))[:max(room, 0)]
+    cand = sorted(cand, key=lambda c: (c.get("fmt") != "top3", -c.get("views", 0)))[:max(room, 0)]
     if not cand:
         return
     aid = None
     for c in cand:
         style = pick_style(st) if c.get("live") else "streamer"
         title, desc = make_copy(c, bool(c.get("live")), style)
+        if c.get("custom_title"):
+            title, desc, style = c["custom_title"], c["custom_desc"], "top3"
         c.update(yt_title=title, yt_desc=desc, style=style)
         url = f"{site}/v/{c['id']}.mp4"
         if z_ok:
@@ -518,7 +528,7 @@ def wrap(t, width=24, lines=3):
     return [l for l in out if l]
 
 
-def make_short(src, dst, title, streamer, max_s, host="twitch.tv"):
+def make_short(src, dst, title, streamer, max_s, host="twitch.tv", hook=None):
     work = os.path.dirname(dst)
     font = next((f for f in FONTS if os.path.exists(f)), None)
     base = ("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:4,eq=brightness=-0.18[bg];"
@@ -538,6 +548,12 @@ def make_short(src, dst, title, streamer, max_s, host="twitch.tv"):
         tmp.append(p)
         txt += (f",drawtext=fontfile='{ff}':textfile=_c.txt:fontsize=44:fontcolor=white@0.95:borderw=5:"
                 "bordercolor=black:x=(w-text_w)/2:y=1470")
+        if hook:
+            p = os.path.join(work, "_h.txt")
+            open(p, "w", encoding="utf-8").write(hook)
+            tmp.append(p)
+            txt += (f",drawtext=fontfile='{ff}':textfile=_h.txt:fontsize=104:fontcolor=yellow:borderw=10:bordercolor=black:"
+                    "box=1:boxcolor=black@0.55:boxborderw=24:x=(w-text_w)/2:y=1600:enable='lt(t,2.5)'")
     enc = ["-map", "[v]", "-map", "0:a?", "-t", str(max_s), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", os.path.basename(dst)]
     for fc in ([base + txt + "[v]", base + "[v]"] if txt else [base + "[v]"]):
@@ -565,14 +581,98 @@ def download(url, dst):
     return os.path.exists(dst)
 
 
+HOOKS = ["WAIT FOR IT...", "NO WAY!!", "WATCH THIS", "HE DID WHAT?!", "ONLY IN GTA 6"]
+
+
+def format_stats(st):
+    """معدل مشاهدات كل شكل محتوى (للمنشور من 6 ساعات وأكثر)."""
+    agg = {}
+    for c in st["clips"].values():
+        if c.get("status") == "posted" and c.get("live") and "yt_views" in c and time.time() - c.get("posted_ts", 0) >= 6 * 3600:
+            a = agg.setdefault(c.get("fmt", "clip"), [0, 0])
+            a[0] += c["yt_views"]
+            a[1] += 1
+    return {k: (round(v[0] / v[1], 2), v[1]) for k, v in agg.items()}
+
+
+def pick_format(st):
+    """يوزع المقاطع الجديدة بين الأشكال، وبعد ما تتجمع أرقام يميل للأقوى."""
+    import random
+    used = {k: sum(1 for c in st["clips"].values() if c.get("fmt") == k) for k in ("clip", "hook")}
+    if min(used.values()) < 4:
+        return min(used, key=lambda k: (used[k], random.random()))
+    fs = {k: v[0] for k, v in format_stats(st).items() if k in used and v[1] >= 3}
+    if fs and random.random() < 0.7:
+        return max(fs, key=fs.get)
+    return random.choice(list(used))
+
+
+def has_audio(path):
+    r = subprocess.run([ffmpeg_bin(), "-hide_banner", "-i", path], capture_output=True, text=True)
+    return "Audio:" in r.stderr
+
+
+def build_top3(conf, st):
+    """مرة باليوم: تجميعة أقوى 3 لحظات من المقاطع الجاهزة (شكل محتوى مختلف عن الكلب المنفرد)."""
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    if st.get("top3_day") == day or TEST_RUN:
+        return
+    font = next((f for f in FONTS if os.path.exists(f)), None)
+    src = [c for c in st["clips"].values() if c["status"] == "ready" and c.get("live") and c.get("fmt", "clip") != "top3"
+           and os.path.exists(os.path.join(READY, c["id"] + ".mp4"))]
+    src = [c for c in sorted(src, key=lambda c: -c.get("views", 0))[:6] if has_audio(os.path.join(READY, c["id"] + ".mp4"))][:3]
+    if len(src) < 3 or not font:
+        return
+    src = src[::-1]  # من الثالث للأول
+    cid, ff = "top3-" + day, font.replace(":", "\\:")
+    args, parts, tmp = [], [], []
+    for i, c in enumerate(src):
+        args += ["-i", os.path.abspath(os.path.join(READY, c["id"] + ".mp4"))]
+        p = os.path.join(READY, f"_n{i}.txt")
+        open(p, "w", encoding="utf-8").write("#%d" % (3 - i))
+        tmp.append(p)
+        parts.append(f"[{i}:v]trim=0:15,setpts=PTS-STARTPTS,fps=30,scale=1080:1920,setsar=1,"
+                     f"drawtext=fontfile='{ff}':textfile=_n{i}.txt:fontsize=150:fontcolor=yellow:borderw=10:bordercolor=black:"
+                     f"box=1:boxcolor=black@0.55:boxborderw=22:x=50:y=90[v{i}];"
+                     f"[{i}:a]atrim=0:15,asetpts=PTS-STARTPTS,aresample=44100,aformat=channel_layouts=stereo[a{i}]")
+    fc = ";".join(parts) + ";" + "".join(f"[v{i}][a{i}]" for i in range(3)) + "concat=n=3:v=1:a=1[v][a]"
+    r = subprocess.run([ffmpeg_bin(), "-y", "-loglevel", "error"] + args + ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+                        "-movflags", "+faststart", cid + ".mp4"], cwd=READY, capture_output=True, text=True)
+    for p in tmp:
+        os.path.exists(p) and os.remove(p)
+    out = os.path.join(READY, cid + ".mp4")
+    if r.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) < 10000:
+        log("top3 فشل:", r.stderr.strip()[-200:])
+        return
+    names = [c["streamer"] for c in src[::-1]]
+    credits = "\n".join(f"#{n} {c['streamer']} — {c.get('page') or c['url']}" for n, c in zip((1, 2, 3), src[::-1]))
+    st["clips"][cid] = {
+        "id": cid, "url": "", "title": "Top 3 GTA 6 moments", "streamer": "+".join(names)[:60], "views": sum(c.get("views", 0) for c in src),
+        "duration": 45.0, "lang": "", "created": "", "src": "mix", "live": True, "status": "ready", "fmt": "top3",
+        "day": datetime.now().strftime("%Y-%m-%d"), "ts": time.time(),
+        "custom_title": "أقوى 3 لحظات بـ GTA 6 اليوم 🔥 Top 3 GTA 6 moments today #GTA6 #shorts",
+        "custom_desc": ("Top 3 GTA 6 stream moments today, ranked.\nأقوى 3 لحظات من بثوث GTA 6 اليوم، مرتبة.\n\n" + credits +
+                        "\n\nSubscribe for the daily top 3! اشترك حتى توصلك تجميعة كل يوم.\n\n#GTA6 #GTAVI #جي_تي_اي_6 #قراند6 #shorts")}
+    st["clips"][cid]["yt_title"], st["clips"][cid]["yt_desc"] = st["clips"][cid]["custom_title"], st["clips"][cid]["custom_desc"]
+    for c in src:
+        c["status"] = "used"
+    st["top3_day"] = day
+    save_state(st)
+    log("top3 جاهز ✓", ", ".join(names))
+
+
 def process(c, conf, st):
     raw, out = os.path.join(RAW, c["id"] + ".mp4"), os.path.join(READY, c["id"] + ".mp4")
     vt = nice_title(c, "GTA 5" if TEST_RUN else "GTA 6")
+    import random
+    fmt = "clip" if TEST_RUN else pick_format(st)
     ok = (os.path.exists(raw) or download(c["url"], raw)) and make_short(raw, out, vt, c["streamer"], conf["max_seconds"],
-                                                                        "kick.com" if c.get("src") == "kick" else "twitch.tv")
+                                                                        "kick.com" if c.get("src") == "kick" else "twitch.tv",
+                                                                        random.choice(HOOKS) if fmt == "hook" else None)
     t = clean(c["title"])[:60]
     yt_t, yt_d = make_copy(c, not TEST_RUN)
-    rec = dict(c, live=not TEST_RUN, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
+    rec = dict(c, fmt=fmt, live=not TEST_RUN, status="ready" if ok else "failed", day=datetime.now().strftime("%Y-%m-%d"), ts=time.time(),
                yt_title=yt_t, yt_desc=yt_d)
     with LOCK:
         st["clips"][c["id"]] = rec
@@ -635,6 +735,10 @@ def cycle(conf, st, test=False):
         for c in st["clips"].values():
             c.pop("pub_fail", None)
         st["pubfail_reset_1"] = True
+    try:
+        build_top3(conf, st)
+    except Exception as ex:
+        log("top3 خطأ:", type(ex).__name__, str(ex)[:160])
     backlog = sum(1 for c in st["clips"].values() if c["status"] == "ready" and c.get("live"))
     if not test and backlog >= conf.get("max_backlog", 12):
         log(f"بالانتظار {backlog} مقطع جاهز، ما أكص زيادة لحد ما ينفتح النشر")

@@ -64,7 +64,7 @@
   "max_per_streamer_per_day": 4,
   "keep_hours": 72,
   "hashtags": "#GTA6 #GTAVI #shorts",
-  "max_publish_per_day": 10,
+  "max_publish_per_day": 4,
   "publish_per_run": 1,
   "test_streamers": [
     "buddha",
@@ -95,5 +95,12 @@
   ],
   "not_before": "2026-11-18T05:00:00Z",
   "buffer_enabled": false,
-  "max_backlog": 20
+  "max_backlog": 12,
+  "publish_hours_utc": [
+    1,
+    14,
+    18,
+    22
+  ],
+  "min_gap_minutes": 150
 }
